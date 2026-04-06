@@ -92,6 +92,9 @@ Links:
 
 ### 14:30 → 15:12 — Session Log
 
+> **Model:** anthropic/claude-sonnet-4-20250514
+> **Project:** `/Users/ido/projects/pi-obsidian-vault`
+
 #### Overview
 Refactored the search module in `lib/search.ts` to support regex queries and added test coverage.
 
@@ -113,6 +116,9 @@ Refactored the search module in `lib/search.ts` to support regex queries and add
 - None.
 
 ### 16:45 → 17:03 — Session Log
+
+> **Model:** openai/gpt-4o
+> **Project:** `/Users/ido/research/neuro-analysis`
 
 #### Overview
 Explored neuroimaging notes and created a new note on fMRI preprocessing.

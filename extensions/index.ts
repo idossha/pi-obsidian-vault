@@ -11,7 +11,6 @@ import {
   updateMetadataField,
   deleteMetadataField,
   getSemanticFields,
-  serializeMetadata,
 } from "../lib/metadata.js";
 import { extractWikilinks, extractInlineTags } from "../lib/wikilinks.js";
 import { searchVault } from "../lib/search.js";
@@ -56,16 +55,7 @@ export default function (pi: ExtensionAPI) {
       try {
         const msg = event.message;
         if (msg.role === "assistant" && msg.content) {
-          // Extract text from content blocks
-          let text = "";
-          if (typeof msg.content === "string") {
-            text = msg.content;
-          } else if (Array.isArray(msg.content)) {
-            text = msg.content
-              .filter((block: any) => block.type === "text")
-              .map((block: any) => block.text)
-              .join("\n");
-          }
+          const text = extractMessageText(msg.content);
           if (text.trim()) {
             tracker.trackAssistantResponse(text);
           }
@@ -94,10 +84,33 @@ export default function (pi: ExtensionAPI) {
       }
     });
 
-    // Reset tracker on new session
-    pi.on("session_start", async (event) => {
+    // Reset or restore tracker on session lifecycle events
+    pi.on("session_start", async (event, ctx) => {
       if (event.reason === "new" || event.reason === "fork") {
         tracker = new SessionTracker();
+      } else if (event.reason === "startup" || event.reason === "reload") {
+        // Reconstruct tracker from session history so /reload doesn't lose data
+        tracker = new SessionTracker();
+        try {
+          for (const entry of ctx.sessionManager.getBranch()) {
+            if (entry.type !== "message" || !entry.message) continue;
+            const msg = entry.message as any;
+            if (msg.role === "user") {
+              const text = extractMessageText(msg.content);
+              if (text) tracker.trackPrompt(text);
+            } else if (msg.role === "assistant") {
+              const text = extractMessageText(msg.content);
+              if (text) tracker.trackAssistantResponse(text);
+            } else if (msg.role === "toolResult" || msg.role === "tool") {
+              // Reconstruct tool call tracking from result entries
+              if (msg.toolName) {
+                tracker.trackToolCall(msg.toolName, msg.details ?? {});
+              }
+            }
+          }
+        } catch {
+          // If reconstruction fails, start fresh — better than crashing
+        }
       }
     });
   }
@@ -498,7 +511,6 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
-  // ── /vault command ──────────────────────────────────────────────────
   // ── /vault:help command ─────────────────────────────────────────────
   pi.registerCommand("vault:help", {
     description: "Show all vault commands and usage",
@@ -694,6 +706,16 @@ function formatDate(date: Date, format: string): string {
     .replace(/ss/g, seconds);
 }
 
+/** Extract text from a message content field (string, array of blocks, etc.) */
+function extractMessageText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .filter((block: any) => block?.type === "text" && typeof block.text === "string")
+    .map((block: any) => block.text)
+    .join("\n");
+}
+
 /**
  * Call the LLM to summarize the session, then append to the daily file.
  */
@@ -751,14 +773,18 @@ async function summarizeAndAppend(
     throw new Error("LLM returned empty summary");
   }
 
-  // Build heading: time range + first user prompt as topic
+  // Build heading and metadata block
   const startTime = tracker.getStartTime();
-  const h = String(startTime.getHours()).padStart(2, "0");
-  const m = String(startTime.getMinutes()).padStart(2, "0");
-  const now = new Date();
-  const eh = String(now.getHours()).padStart(2, "0");
-  const em = String(now.getMinutes()).padStart(2, "0");
-  const heading = `${h}:${m} → ${eh}:${em} — Session Log`;
+  const pad2 = (n: number) => String(n).padStart(2, "0");
+  const timeRange = `${pad2(startTime.getHours())}:${pad2(startTime.getMinutes())} → ${pad2(new Date().getHours())}:${pad2(new Date().getMinutes())}`;
+  const heading = `${timeRange} — Session Log`;
 
-  appendSessionSummary(vault, config, heading, summary);
+  const modelLabel = `${model.provider}/${model.id}`;
+  const metaLines = [
+    `> **Model:** ${modelLabel}`,
+    `> **Project:** \`${ctx.cwd}\``,
+  ];
+  const fullSummary = metaLines.join("\n") + "\n\n" + summary;
+
+  appendSessionSummary(vault, config, heading, fullSummary);
 }
