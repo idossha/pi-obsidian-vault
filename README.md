@@ -60,9 +60,10 @@ That's it. The extension auto-detects your vault's folder structure, metadata st
 | Command | Description |
 |---------|-------------|
 | `/vault` | Show vault info (path, note count, detected config) |
-| `/vault:init` | Generate `vault.config.json` from auto-detected settings |
+| `/vault:help` | Show all vault commands and tools with descriptions |
 | `/vault:daily` | View today's daily session log |
-| `/vault:daily flush` | Write current session's log to the daily file immediately |
+| `/vault:daily flush` | Summarize current session via LLM and write to daily file now |
+| `/vault:init` | Auto-detect vault conventions and generate `vault.config.json` |
 
 ## Skill
 

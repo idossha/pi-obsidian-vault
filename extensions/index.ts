@@ -28,6 +28,18 @@ export default function (pi: ExtensionAPI) {
 
   const config = loadConfig(vault.root);
 
+  // ── Startup notification ─────────────────────────────────────────────
+  pi.on("session_start", async (event, ctx) => {
+    if (event.reason === "startup" && ctx.hasUI) {
+      const noteCount = vault.getAllMarkdownFiles().length;
+      ctx.ui.notify(
+        `📓 Obsidian vault loaded: ${noteCount} notes\n` +
+        `   /vault  /vault:help  /vault:daily  /vault:init`,
+        "info"
+      );
+    }
+  });
+
   // ── Session tracking for daily summaries ────────────────────────────
   let tracker = new SessionTracker();
 
@@ -487,8 +499,38 @@ export default function (pi: ExtensionAPI) {
   });
 
   // ── /vault command ──────────────────────────────────────────────────
+  // ── /vault:help command ─────────────────────────────────────────────
+  pi.registerCommand("vault:help", {
+    description: "Show all vault commands and usage",
+    async handler(_args, ctx) {
+      const help = [
+        "📓 Obsidian Vault Commands",
+        "",
+        "/vault          — Show vault info (path, note count, metadata style, templates)",
+        "/vault:help     — Show this help message",
+        "/vault:daily    — View today's daily session log",
+        "/vault:daily flush — Summarize current session and write to daily file now",
+        "/vault:init     — Auto-detect vault conventions and generate vault.config.json",
+        "",
+        "Tools available to the LLM:",
+        "  vault_read      — Read a note by path or [[wikilink]]",
+        "  vault_write     — Create, overwrite, or append to a note",
+        "  vault_search    — Full-text search (supports regex)",
+        "  vault_list      — List files and directories",
+        "  vault_tags      — List all tags or find notes by tag",
+        "  vault_backlinks — Find notes linking to a given note",
+        "  vault_metadata  — Read, set, or delete note metadata",
+      ].join("\n");
+
+      if (ctx.hasUI) {
+        ctx.ui.notify(help, "info");
+      }
+    },
+  });
+
+  // ── /vault command ──────────────────────────────────────────────────
   pi.registerCommand("vault", {
-    description: "Show Obsidian vault info and detected configuration",
+    description: "Show vault info (path, notes, config) — try /vault:help for all commands",
     async handler(_args, ctx) {
       const files = vault.getAllMarkdownFiles();
       const entries = vault.listDir();
@@ -512,7 +554,7 @@ export default function (pi: ExtensionAPI) {
 
   // ── /vault:daily command ────────────────────────────────────────────
   pi.registerCommand("vault:daily", {
-    description: "Show today's daily summary or flush current session now",
+    description: "View today's daily log, or '/vault:daily flush' to write current session now",
     async handler(args, ctx) {
       const dailyPath = getDailyFilePath(config);
 
@@ -549,7 +591,7 @@ export default function (pi: ExtensionAPI) {
 
   // ── /vault:init command ─────────────────────────────────────────────
   pi.registerCommand("vault:init", {
-    description: "Generate vault.config.json by auto-detecting vault conventions",
+    description: "Auto-detect vault conventions and generate vault.config.json",
     async handler(_args, ctx) {
       const configPath = `${vault.root}/vault.config.json`;
       const configContent = generateConfigFile(vault.root);
