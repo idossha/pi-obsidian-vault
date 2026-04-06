@@ -1,0 +1,47 @@
+{
+  "name": "pi-obsidian-vault",
+  "version": "0.1.0",
+  "private": false,
+  "description": "Pi extension for filesystem-native Obsidian vault integration — read, write, search, backlinks, tags, metadata, and daily session summaries",
+  "type": "module",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "obsidian",
+    "vault",
+    "knowledge-base",
+    "notes"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/idossha/pi-obsidian-vault.git"
+  },
+  "bugs": {
+    "url": "https://github.com/idossha/pi-obsidian-vault/issues"
+  },
+  "homepage": "https://github.com/idossha/pi-obsidian-vault#readme",
+  "files": [
+    "extensions/",
+    "lib/",
+    "skills/",
+    "README.md",
+    "LICENSE"
+  ],
+  "pi": {
+    "extensions": ["./extensions"],
+    "skills": ["./skills"]
+  },
+  "dependencies": {
+    "yaml": "^2.7.0"
+  },
+  "peerDependencies": {
+    "@mariozechner/pi-ai": "*",
+    "@mariozechner/pi-coding-agent": "*",
+    "@sinclair/typebox": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^25.5.2",
+    "typescript": "^6.0.2"
+  }
+}
