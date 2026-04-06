@@ -9,7 +9,7 @@ A [Pi](https://github.com/badlogic/pi-mono) extension for filesystem-native Obsi
 - **Both metadata styles** — supports YAML frontmatter and plaintext metadata headers
 - **Auto-detection** — reads `.obsidian/` settings to detect your vault's conventions (folders, metadata style, date formats, templates, footer)
 - **Template support** — create notes from your existing Obsidian templates with variable expansion
-- **Daily session log** — automatically appends a structured summary of your Pi sessions to a daily note
+- **LLM-powered daily session log** — automatically summarizes your Pi sessions via the LLM and appends structured entries to a daily note
 - **Configurable** — works out of the box with auto-detection, or fine-tune via `vault.config.json`
 
 ## Install
@@ -70,13 +70,15 @@ The extension includes an `obsidian-vault` skill that teaches Pi about Obsidian 
 
 ## Daily Session Log
 
-Every time you end a Pi session, the extension appends a structured summary to `Daily/YYYY-MM-DD.md` in your vault. It captures:
+Every time you end a Pi session, the extension sends the full conversation to the LLM for summarization, then appends the result to `Daily/YYYY-MM-DD.md` in your vault. The LLM produces a structured summary with these sections:
 
-- Every prompt you sent (with topic extraction)
-- Files read, written, and edited (all Pi tools, not just vault tools)
-- Bash commands executed
-- Vault operations (search queries, tag scans, backlink checks)
-- Conversation topics discussed
+- **Overview** — one or two sentence high-level description
+- **Topics Discussed** — what the user asked about
+- **Actions Taken** — files created/edited, commands run, configurations changed
+- **Key Outcomes** — important results, decisions, or conclusions
+- **Open Items** — anything left unfinished or explicitly deferred
+
+The raw conversation (user prompts, assistant responses, tool calls, files touched, shell commands) is collected throughout the session and passed to the LLM at shutdown for summarization.
 
 Example daily file:
 
@@ -87,28 +89,55 @@ Links:
 
 ---
 
-### 14:30 — help me refactor the search module
-- 3 prompts in conversation
-- Read: `lib/search.ts`
-- Edited: `lib/search.ts`
-- Ran: `npx tsc --noEmit`
-- Vault search: "EEG"
+### 14:30 → 15:12 — Session Log
 
-**Topics discussed:**
-- help me refactor the search module
-- now test it against my vault
-- looks good, update the docs
+#### Overview
+Refactored the search module in `lib/search.ts` to support regex queries and added test coverage.
 
-### 16:45 — what notes do I have about neuroimaging?
-- Read: `Zettelkasten/Brain Atlases.md`
-- Wrote: `Zettelkasten/fMRI Preprocessing.md`
-- Vault search: "neuroimaging"
+#### Topics Discussed
+- Refactoring the search module for regex support
+- Testing the refactored search against the vault
+- Updating documentation to reflect changes
+
+#### Actions Taken
+- Edited `lib/search.ts` — added `regex` option to `searchVault()` and refactored match logic
+- Ran `npx tsc --noEmit` to verify compilation
+- Updated `README.md` with new search parameters
+
+#### Key Outcomes
+- Search now supports optional regex mode via `regex: true` parameter
+- All existing tests pass, no regressions
+
+#### Open Items
+- None.
+
+### 16:45 → 17:03 — Session Log
+
+#### Overview
+Explored neuroimaging notes and created a new note on fMRI preprocessing.
+
+#### Topics Discussed
+- Finding notes related to neuroimaging
+- Creating a structured note on fMRI preprocessing pipelines
+
+#### Actions Taken
+- Searched vault for "neuroimaging"
+- Read `Zettelkasten/Brain Atlases.md` for context
+- Created `Zettelkasten/fMRI Preprocessing.md` with pipeline overview
+
+#### Key Outcomes
+- New fMRI preprocessing note created with links to existing atlas notes
+
+#### Open Items
+- Add section on motion correction parameters
 
 ---
 # References
 ```
 
-Disable it by setting `dailySummary.enabled` to `false` in `vault.config.json`.
+By default the extension uses the current session model for summarization. You can configure a dedicated (cheaper/faster) model via `dailySummary.summaryModel`.
+
+Disable daily logging by setting `dailySummary.enabled` to `false` in `vault.config.json`.
 
 ## Configuration
 
@@ -153,7 +182,9 @@ Run `/vault:init` to generate a `vault.config.json` in your vault root. The exte
   "dailySummary": {
     "enabled": true,
     "folder": "Daily",
-    "filenameFormat": "YYYY-MM-DD"
+    "filenameFormat": "YYYY-MM-DD",
+    "maxLength": 3000,
+    "summaryModel": ""
   }
 }
 ```
@@ -182,6 +213,16 @@ Links: [[Related Note]]
 ```
 
 The extension handles both transparently.
+
+### Daily Summary Options
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `dailySummary.enabled` | `true` | Enable/disable session logging |
+| `dailySummary.folder` | `"Daily"` | Vault subfolder for daily files |
+| `dailySummary.filenameFormat` | `"YYYY-MM-DD"` | Date format for the daily filename |
+| `dailySummary.maxLength` | `3000` | Maximum character length for the summary body |
+| `dailySummary.summaryModel` | `""` | Model for summarization in `"provider/model-id"` format (e.g. `"anthropic/claude-sonnet-4-20250514"`, `"openai/gpt-4o"`). Empty string uses the current session model. |
 
 ## Requirements
 

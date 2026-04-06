@@ -1,6 +1,7 @@
-import { Type, StringEnum } from "@mariozechner/pi-ai";
+import { Type, StringEnum, complete, getModel } from "@mariozechner/pi-ai";
 import {
   type ExtensionAPI,
+  type ExtensionContext,
   withFileMutationQueue,
 } from "@mariozechner/pi-coding-agent";
 import { Vault } from "../lib/vault.js";
@@ -14,7 +15,7 @@ import {
 } from "../lib/metadata.js";
 import { extractWikilinks, extractInlineTags } from "../lib/wikilinks.js";
 import { searchVault } from "../lib/search.js";
-import { SessionTracker, appendSessionSummary, getDailyFilePath } from "../lib/daily.js";
+import { SessionTracker, appendSessionSummary, getDailyFilePath, buildSummaryPrompt } from "../lib/daily.js";
 
 export default function (pi: ExtensionAPI) {
   let vault: Vault;
@@ -38,6 +39,30 @@ export default function (pi: ExtensionAPI) {
       }
     });
 
+    // Track assistant responses
+    pi.on("message_end", async (event) => {
+      try {
+        const msg = event.message;
+        if (msg.role === "assistant" && msg.content) {
+          // Extract text from content blocks
+          let text = "";
+          if (typeof msg.content === "string") {
+            text = msg.content;
+          } else if (Array.isArray(msg.content)) {
+            text = msg.content
+              .filter((block: any) => block.type === "text")
+              .map((block: any) => block.text)
+              .join("\n");
+          }
+          if (text.trim()) {
+            tracker.trackAssistantResponse(text);
+          }
+        }
+      } catch {
+        // Don't let tracking errors break message flow
+      }
+    });
+
     // Track every tool call (all tools, not just vault_*)
     pi.on("tool_call", async (event) => {
       try {
@@ -48,9 +73,10 @@ export default function (pi: ExtensionAPI) {
     });
 
     // Flush summary to daily file on session end
-    pi.on("session_shutdown", async () => {
+    pi.on("session_shutdown", async (_event, ctx) => {
       try {
-        appendSessionSummary(vault, config, tracker);
+        if (!tracker.hasActivity()) return;
+        await summarizeAndAppend(vault, config, tracker, ctx);
       } catch (e: any) {
         console.error(`[obsidian-vault] Failed to write daily summary: ${e.message}`);
       }
@@ -497,7 +523,8 @@ export default function (pi: ExtensionAPI) {
           return;
         }
         try {
-          appendSessionSummary(vault, config, tracker);
+          if (ctx.hasUI) ctx.ui.notify("Generating LLM summary...", "info");
+          await summarizeAndAppend(vault, config, tracker, ctx);
           tracker = new SessionTracker();
           if (ctx.hasUI) ctx.ui.notify(`Session summary appended to ${dailyPath}`, "info");
         } catch (e: any) {
@@ -623,4 +650,73 @@ function formatDate(date: Date, format: string): string {
     .replace(/HH/g, hours)
     .replace(/mm/g, minutes)
     .replace(/ss/g, seconds);
+}
+
+/**
+ * Call the LLM to summarize the session, then append to the daily file.
+ */
+async function summarizeAndAppend(
+  vault: Vault,
+  config: VaultConfig,
+  tracker: SessionTracker,
+  ctx: ExtensionContext
+): Promise<void> {
+  const conversationText = tracker.toConversationText();
+  const prompt = buildSummaryPrompt(conversationText, config.dailySummary.maxLength);
+
+  // Resolve model: use configured summaryModel, or fall back to current session model
+  let model = ctx.model;
+  if (config.dailySummary.summaryModel) {
+    const [provider, id] = config.dailySummary.summaryModel.split("/", 2);
+    if (provider && id) {
+      const found = getModel(provider, id);
+      if (found) model = found;
+    }
+  }
+
+  if (!model) {
+    throw new Error("No model available for summarization");
+  }
+
+  const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
+  if (!auth.ok || !auth.apiKey) {
+    throw new Error(`No API key for ${model.provider}/${model.id}`);
+  }
+
+  const response = await complete(
+    model,
+    {
+      messages: [
+        {
+          role: "user" as const,
+          content: [{ type: "text" as const, text: prompt }],
+          timestamp: Date.now(),
+        },
+      ],
+    },
+    {
+      apiKey: auth.apiKey,
+      headers: auth.headers,
+    }
+  );
+
+  const summary = response.content
+    .filter((c: any): c is { type: "text"; text: string } => c.type === "text")
+    .map((c: any) => c.text)
+    .join("\n");
+
+  if (!summary.trim()) {
+    throw new Error("LLM returned empty summary");
+  }
+
+  // Build heading: time range + first user prompt as topic
+  const startTime = tracker.getStartTime();
+  const h = String(startTime.getHours()).padStart(2, "0");
+  const m = String(startTime.getMinutes()).padStart(2, "0");
+  const now = new Date();
+  const eh = String(now.getHours()).padStart(2, "0");
+  const em = String(now.getMinutes()).padStart(2, "0");
+  const heading = `${h}:${m} → ${eh}:${em} — Session Log`;
+
+  appendSessionSummary(vault, config, heading, summary);
 }

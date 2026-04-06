@@ -3,6 +3,12 @@ import * as path from "node:path";
 import type { VaultConfig } from "./config.js";
 import type { Vault } from "./vault.js";
 
+interface ConversationTurn {
+  role: "user" | "assistant";
+  text: string;
+  timestamp: Date;
+}
+
 interface ToolCall {
   tool: string;
   summary: string;
@@ -12,7 +18,7 @@ interface ToolCall {
 /** Tracks all Pi session activity for daily summaries */
 export class SessionTracker {
   private startTime: Date;
-  private prompts: string[] = [];
+  private conversation: ConversationTurn[] = [];
   private toolCalls: ToolCall[] = [];
   private filesRead: Set<string> = new Set();
   private filesWritten: Set<string> = new Set();
@@ -26,7 +32,25 @@ export class SessionTracker {
   /** Record a user prompt */
   trackPrompt(text: string): void {
     const trimmed = text.trim();
-    if (trimmed) this.prompts.push(trimmed);
+    if (trimmed) {
+      this.conversation.push({
+        role: "user",
+        text: trimmed,
+        timestamp: new Date(),
+      });
+    }
+  }
+
+  /** Record an assistant response */
+  trackAssistantResponse(text: string): void {
+    const trimmed = text.trim();
+    if (trimmed) {
+      this.conversation.push({
+        role: "assistant",
+        text: trimmed,
+        timestamp: new Date(),
+      });
+    }
   }
 
   /** Record any tool call from Pi */
@@ -34,27 +58,24 @@ export class SessionTracker {
     const summary = summarizeToolCall(toolName, input);
     this.toolCalls.push({ tool: toolName, summary, timestamp: new Date() });
 
-    // Also track specific categories for the summary
     switch (toolName) {
       case "read":
-        if (input.file_path) this.filesRead.add(input.file_path);
+        if (input.file_path || input.path) this.filesRead.add(input.file_path || input.path);
         break;
       case "write":
-        if (input.file_path) this.filesWritten.add(input.file_path);
+        if (input.file_path || input.path) this.filesWritten.add(input.file_path || input.path);
         break;
       case "edit":
-        if (input.file_path) this.filesEdited.add(input.file_path);
+        if (input.file_path || input.path) this.filesEdited.add(input.file_path || input.path);
         break;
       case "bash":
         if (input.command) {
-          // Truncate long commands
-          const cmd = input.command.length > 100
-            ? input.command.slice(0, 100) + "..."
+          const cmd = input.command.length > 120
+            ? input.command.slice(0, 120) + "..."
             : input.command;
           this.bashCommands.push(cmd);
         }
         break;
-      // Vault tools
       case "vault_read":
         if (input.path) this.filesRead.add(input.path);
         else if (input.name) this.filesRead.add(`[[${input.name}]]`);
@@ -62,114 +83,120 @@ export class SessionTracker {
       case "vault_write":
         if (input.path) this.filesWritten.add(input.path);
         break;
-      case "vault_search":
-      case "vault_tags":
-      case "vault_backlinks":
-      case "vault_metadata":
-      case "vault_list":
-        // Already captured in toolCalls
-        break;
     }
   }
 
   hasActivity(): boolean {
-    return this.prompts.length > 0 || this.toolCalls.length > 0;
+    return this.conversation.length > 0 || this.toolCalls.length > 0;
   }
 
-  /** Format the session as a markdown section */
-  toMarkdown(): string {
+  /** Get session start time */
+  getStartTime(): Date {
+    return this.startTime;
+  }
+
+  /**
+   * Build the full session context as text for LLM summarization.
+   * Includes conversation, tool calls, and file activity.
+   */
+  toConversationText(): string {
+    const sections: string[] = [];
+
     const time = formatTime(this.startTime);
-    // Use first prompt as the session topic
-    const topic = this.prompts.length > 0
-      ? this.prompts[0].split("\n")[0].slice(0, 80)
-      : "Pi session";
-    const heading = `### ${time} — ${topic}`;
-    const lines: string[] = [heading];
+    const endTime = this.conversation.length > 0
+      ? formatTime(this.conversation[this.conversation.length - 1].timestamp)
+      : time;
+    sections.push(`Session: ${time} → ${endTime}`);
+    sections.push("");
 
-    // Conversation summary
-    if (this.prompts.length > 1) {
-      lines.push(`- ${this.prompts.length} prompts in conversation`);
+    // Conversation
+    for (const turn of this.conversation) {
+      const label = turn.role === "user" ? "User" : "Assistant";
+      // Truncate very long turns to keep context manageable
+      const text = turn.text.length > 2000
+        ? turn.text.slice(0, 2000) + "\n...(truncated)"
+        : turn.text;
+      sections.push(`${label}: ${text}`);
+      sections.push("");
     }
 
-    // Files touched
-    if (this.filesRead.size > 0) {
-      const items = [...this.filesRead];
-      if (items.length <= 5) {
-        lines.push(...items.map((f) => `- Read: \`${shortenPath(f)}\``));
-      } else {
-        lines.push(...items.slice(0, 3).map((f) => `- Read: \`${shortenPath(f)}\``));
-        lines.push(`- ... and ${items.length - 3} more files read`);
+    // Tool calls
+    if (this.toolCalls.length > 0) {
+      sections.push("Tool calls:");
+      for (const tc of this.toolCalls) {
+        sections.push(`  - ${tc.summary}`);
       }
+      sections.push("");
     }
 
-    if (this.filesEdited.size > 0) {
-      lines.push(...[...this.filesEdited].map((f) => `- Edited: \`${shortenPath(f)}\``));
+    // Files
+    const allFiles = new Set([...this.filesRead, ...this.filesEdited, ...this.filesWritten]);
+    if (allFiles.size > 0) {
+      sections.push("Files touched:");
+      for (const f of this.filesRead) sections.push(`  - Read: ${f}`);
+      for (const f of this.filesEdited) sections.push(`  - Edited: ${f}`);
+      for (const f of this.filesWritten) sections.push(`  - Wrote: ${f}`);
+      sections.push("");
     }
 
-    if (this.filesWritten.size > 0) {
-      lines.push(...[...this.filesWritten].map((f) => `- Wrote: \`${shortenPath(f)}\``));
-    }
-
-    // Bash commands (condensed)
+    // Bash commands
     if (this.bashCommands.length > 0) {
-      if (this.bashCommands.length <= 3) {
-        lines.push(...this.bashCommands.map((c) => `- Ran: \`${c}\``));
-      } else {
-        lines.push(...this.bashCommands.slice(0, 2).map((c) => `- Ran: \`${c}\``));
-        lines.push(`- ... and ${this.bashCommands.length - 2} more commands`);
+      sections.push("Shell commands:");
+      for (const cmd of this.bashCommands) {
+        sections.push(`  - ${cmd}`);
       }
     }
 
-    // Other notable tool calls (vault-specific, grep, find, etc.)
-    const otherTools = this.toolCalls.filter(
-      (tc) => !["read", "write", "edit", "bash", "vault_read", "vault_write"].includes(tc.tool)
-    );
-    if (otherTools.length > 0) {
-      const toolSummary = new Map<string, number>();
-      for (const tc of otherTools) {
-        toolSummary.set(tc.tool, (toolSummary.get(tc.tool) || 0) + 1);
-      }
-      for (const [tool, count] of toolSummary) {
-        // Show first call's summary for single-use tools
-        if (count === 1) {
-          const call = otherTools.find((tc) => tc.tool === tool)!;
-          lines.push(`- ${call.summary}`);
-        } else {
-          lines.push(`- ${tool} (${count}x)`);
-        }
-      }
-    }
-
-    // Follow-up topics (subsequent prompts, condensed)
-    if (this.prompts.length > 1) {
-      lines.push("");
-      lines.push("**Topics discussed:**");
-      // Deduplicate and show unique first lines
-      const seen = new Set<string>();
-      for (const p of this.prompts) {
-        const firstLine = p.split("\n")[0].slice(0, 100);
-        if (!seen.has(firstLine)) {
-          seen.add(firstLine);
-          lines.push(`- ${firstLine}`);
-        }
-      }
-    }
-
-    return lines.join("\n");
+    return sections.join("\n");
   }
+}
+
+/** Build the LLM prompt for session summarization */
+export function buildSummaryPrompt(conversationText: string, maxLength: number): string {
+  return [
+    "Summarize the following coding assistant session into a concise structured daily log entry.",
+    `The summary must be at most ${maxLength} characters.`,
+    "",
+    "Use this exact structure:",
+    "",
+    "#### Overview",
+    "One or two sentences: what was this session about at the highest level.",
+    "",
+    "#### Topics Discussed",
+    "- Bullet list of the main topics / questions the user raised",
+    "",
+    "#### Actions Taken",
+    "- Bullet list of concrete things that were done (files created/edited, commands run, configurations changed, etc.)",
+    "",
+    "#### Key Outcomes",
+    "- Bullet list of important results, decisions, or conclusions reached",
+    "",
+    "#### Open Items",
+    "- Bullet list of anything left unfinished, unresolved, or explicitly deferred. If nothing, write \"None.\"",
+    "",
+    "Rules:",
+    "- Be concise but specific — include file names, function names, config keys when relevant",
+    "- Do NOT include generic filler — every bullet should carry information",
+    "- Do NOT wrap the output in code fences or add any preamble",
+    "- Output ONLY the markdown sections above, nothing else",
+    "",
+    "<session>",
+    conversationText,
+    "</session>",
+  ].join("\n");
 }
 
 /** Produce a one-line summary of a tool call */
 function summarizeToolCall(toolName: string, input: Record<string, any>): string {
   switch (toolName) {
     case "read":
-      return `Read \`${shortenPath(input.file_path || "")}\``;
+      return `Read \`${shortenPath(input.file_path || input.path || "")}\``;
     case "write":
-      return `Wrote \`${shortenPath(input.file_path || "")}\``;
+      return `Wrote \`${shortenPath(input.file_path || input.path || "")}\``;
     case "edit":
-      return `Edited \`${shortenPath(input.file_path || "")}\``;
+      return `Edited \`${shortenPath(input.file_path || input.path || "")}\``;
     case "bash":
-      return `Ran \`${(input.command || "").slice(0, 60)}\``;
+      return `Ran \`${(input.command || "").slice(0, 80)}\``;
     case "vault_search":
       return `Vault search: "${input.query || ""}"`;
     case "vault_tags":
@@ -184,20 +211,21 @@ function summarizeToolCall(toolName: string, input: Record<string, any>): string
       return `Read vault note: ${input.path || input.name || ""}`;
     case "vault_write":
       return `Wrote vault note: ${input.path || ""}`;
-    case "grep":
-    case "find":
-    case "ls":
-      return `${toolName}: ${input.pattern || input.path || ""}`;
     default:
       return `${toolName}`;
   }
 }
 
 function shortenPath(filePath: string): string {
-  // Show just filename or last 2 path segments
   const parts = filePath.split("/");
   if (parts.length <= 2) return filePath;
   return parts.slice(-2).join("/");
+}
+
+function formatTime(date: Date): string {
+  const h = String(date.getHours()).padStart(2, "0");
+  const m = String(date.getMinutes()).padStart(2, "0");
+  return `${h}:${m}`;
 }
 
 /** Get today's daily file path */
@@ -207,23 +235,29 @@ export function getDailyFilePath(config: VaultConfig): string {
   return `${config.dailySummary.folder}/${filename}.md`;
 }
 
-/** Append a session summary to the daily file, creating it if needed */
+/** Append a pre-generated summary entry to the daily file */
 export function appendSessionSummary(
   vault: Vault,
   config: VaultConfig,
-  tracker: SessionTracker
+  heading: string,
+  summaryBody: string
 ): void {
-  if (!tracker.hasActivity()) return;
-
   const dailyPath = getDailyFilePath(config);
   const fullPath = vault.resolve(dailyPath);
   const dir = path.dirname(fullPath);
 
   fs.mkdirSync(dir, { recursive: true });
 
+  // Enforce max length on the body
+  let body = summaryBody;
+  if (body.length > config.dailySummary.maxLength) {
+    body = body.slice(0, config.dailySummary.maxLength - 20) + "\n\n*(truncated)*";
+  }
+
+  const entry = `### ${heading}\n\n${body}`;
+
   const footer = config.conventions.footer;
   const footerBlock = footer ? `\n---\n${footer}\n` : "";
-  const entry = tracker.toMarkdown();
 
   if (!fs.existsSync(fullPath)) {
     const header = buildDailyHeader(config);
@@ -266,12 +300,6 @@ function buildDailyHeader(config: VaultConfig): string {
 
   const dateStr = formatDateForFilename(now, config.metadata.dateFormat);
   return `---\ntags:\n  - daily\ncreated: ${dateStr}\n---\n\n`;
-}
-
-function formatTime(date: Date): string {
-  const h = String(date.getHours()).padStart(2, "0");
-  const m = String(date.getMinutes()).padStart(2, "0");
-  return `${h}:${m}`;
 }
 
 function formatDateForFilename(date: Date, format: string): string {

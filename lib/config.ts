@@ -42,6 +42,9 @@ export interface DailySummaryConfig {
   enabled: boolean;
   folder: string;
   filenameFormat: string;
+  maxLength: number;
+  /** Model for LLM-powered summarization, e.g. "anthropic/claude-sonnet-4-20250514" or "openai/gpt-4o". Empty string = use current session model. */
+  summaryModel: string;
 }
 
 export interface VaultConfig {
@@ -88,6 +91,8 @@ const DEFAULT_CONFIG: VaultConfig = {
     enabled: true,
     folder: "Daily",
     filenameFormat: "YYYY-MM-DD",
+    maxLength: 3000,
+    summaryModel: "",
   },
 };
 
