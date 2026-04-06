@@ -151,11 +151,36 @@ export class SessionTracker {
   }
 }
 
+/**
+ * Compute a dynamic max summary length proportional to the input content.
+ *
+ * Strategy: the summary should be roughly 15-20% of the input size,
+ * clamped between a floor (500 chars) and the configured ceiling.
+ * Very short sessions get a short summary; long sessions get more room.
+ */
+export function computeSummaryLength(conversationTextLength: number, configMax: number): number {
+  const MIN_LENGTH = 500;
+  const RATIO = 0.18;
+  const proportional = Math.round(conversationTextLength * RATIO);
+  return Math.max(MIN_LENGTH, Math.min(proportional, configMax));
+}
+
 /** Build the LLM prompt for session summarization */
 export function buildSummaryPrompt(conversationText: string, maxLength: number): string {
+  // Describe the density expectation based on session size
+  let densityHint: string;
+  if (conversationText.length < 2000) {
+    densityHint = "This was a short session. Keep the summary very brief — a few bullets per section at most. Omit sections that have nothing meaningful to report.";
+  } else if (conversationText.length < 10000) {
+    densityHint = "This was a moderate session. Provide a balanced summary with key details.";
+  } else {
+    densityHint = "This was a long session. Provide a thorough summary but stay within the character limit. Prioritize the most important actions and outcomes.";
+  }
+
   return [
     "Summarize the following coding assistant session into a concise structured daily log entry.",
     `The summary must be at most ${maxLength} characters.`,
+    densityHint,
     "",
     "Use this exact structure:",
     "",

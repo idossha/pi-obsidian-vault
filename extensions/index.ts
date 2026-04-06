@@ -14,7 +14,9 @@ import {
 } from "../lib/metadata.js";
 import { extractWikilinks, extractInlineTags } from "../lib/wikilinks.js";
 import { searchVault } from "../lib/search.js";
-import { SessionTracker, appendSessionSummary, getDailyFilePath, buildSummaryPrompt } from "../lib/daily.js";
+import { SessionTracker, appendSessionSummary, getDailyFilePath, buildSummaryPrompt, computeSummaryLength } from "../lib/daily.js";
+
+const FLUSH_ENTRY_TYPE = "vault-daily-flush";
 
 export default function (pi: ExtensionAPI) {
   let vault: Vault;
@@ -89,12 +91,26 @@ export default function (pi: ExtensionAPI) {
       if (event.reason === "new" || event.reason === "fork") {
         tracker = new SessionTracker();
       } else if (event.reason === "startup" || event.reason === "reload") {
-        // Reconstruct tracker from session history so /reload doesn't lose data
+        // Reconstruct tracker from session history so /reload doesn't lose data.
+        // Only replay entries AFTER the last flush checkpoint.
         tracker = new SessionTracker();
         try {
-          for (const entry of ctx.sessionManager.getBranch()) {
+          const branch = ctx.sessionManager.getBranch();
+
+          // Find the last flush checkpoint index
+          let startIdx = 0;
+          for (let i = branch.length - 1; i >= 0; i--) {
+            const entry = branch[i] as any;
+            if (entry.type === "custom" && entry.customType === FLUSH_ENTRY_TYPE) {
+              startIdx = i + 1;
+              break;
+            }
+          }
+
+          for (let i = startIdx; i < branch.length; i++) {
+            const entry = branch[i] as any;
             if (entry.type !== "message" || !entry.message) continue;
-            const msg = entry.message as any;
+            const msg = entry.message;
             if (msg.role === "user") {
               const text = extractMessageText(msg.content);
               if (text) tracker.trackPrompt(text);
@@ -102,7 +118,6 @@ export default function (pi: ExtensionAPI) {
               const text = extractMessageText(msg.content);
               if (text) tracker.trackAssistantResponse(text);
             } else if (msg.role === "toolResult" || msg.role === "tool") {
-              // Reconstruct tool call tracking from result entries
               if (msg.toolName) {
                 tracker.trackToolCall(msg.toolName, msg.details ?? {});
               }
@@ -579,6 +594,9 @@ export default function (pi: ExtensionAPI) {
         try {
           if (ctx.hasUI) ctx.ui.notify("Generating LLM summary...", "info");
           await summarizeAndAppend(vault, config, tracker, ctx);
+          // Persist a flush checkpoint in the session so reconstruction
+          // and shutdown know to only summarize content after this point
+          pi.appendEntry(FLUSH_ENTRY_TYPE, { timestamp: Date.now() });
           tracker = new SessionTracker();
           if (ctx.hasUI) ctx.ui.notify(`Session summary appended to ${dailyPath}`, "info");
         } catch (e: any) {
@@ -726,7 +744,8 @@ async function summarizeAndAppend(
   ctx: ExtensionContext
 ): Promise<void> {
   const conversationText = tracker.toConversationText();
-  const prompt = buildSummaryPrompt(conversationText, config.dailySummary.maxLength);
+  const dynamicMaxLength = computeSummaryLength(conversationText.length, config.dailySummary.maxLength);
+  const prompt = buildSummaryPrompt(conversationText, dynamicMaxLength);
 
   // Resolve model: use configured summaryModel, or fall back to current session model
   let model = ctx.model;
