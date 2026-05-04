@@ -1,4 +1,4 @@
-import { Type, StringEnum, complete, getModel } from "@mariozechner/pi-ai";
+import { Type, StringEnum, completeSimple, getModel, getProviders, type KnownProvider } from "@mariozechner/pi-ai";
 import {
   type ExtensionAPI,
   type ExtensionContext,
@@ -751,8 +751,8 @@ async function summarizeAndAppend(
   let model = ctx.model;
   if (config.dailySummary.summaryModel) {
     const [provider, id] = config.dailySummary.summaryModel.split("/", 2);
-    if (provider && id) {
-      const found = getModel(provider, id);
+    if (provider && id && getProviders().includes(provider as KnownProvider)) {
+      const found = (getModel as any)(provider, id);
       if (found) model = found;
     }
   }
@@ -766,9 +766,13 @@ async function summarizeAndAppend(
     throw new Error(`No API key for ${model.provider}/${model.id}`);
   }
 
-  const response = await complete(
+  const response = await completeSimple(
     model,
     {
+      systemPrompt:
+        "You write Obsidian daily-note entries that function as an expanding knowledge base " +
+        "for human users and future coding agents. Return only the requested markdown sections, " +
+        "with no preamble or code fences.",
       messages: [
         {
           role: "user" as const,
@@ -780,16 +784,24 @@ async function summarizeAndAppend(
     {
       apiKey: auth.apiKey,
       headers: auth.headers,
+      reasoning: "minimal",
+      maxTokens: Math.max(1000, Math.ceil(dynamicMaxLength / 3)),
     }
   );
+
+  if (response.stopReason === "error") {
+    throw new Error(response.errorMessage || "LLM summary request failed");
+  }
 
   const summary = response.content
     .filter((c: any): c is { type: "text"; text: string } => c.type === "text")
     .map((c: any) => c.text)
-    .join("\n");
+    .join("\n")
+    .trim();
 
-  if (!summary.trim()) {
-    throw new Error("LLM returned empty summary");
+  if (!summary) {
+    const contentTypes = response.content.map((c: any) => c?.type || "unknown").join(", ") || "none";
+    throw new Error(`LLM returned empty summary (stopReason=${response.stopReason}, contentTypes=${contentTypes})`);
   }
 
   // Build heading and metadata block

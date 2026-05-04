@@ -170,40 +170,54 @@ export function buildSummaryPrompt(conversationText: string, maxLength: number):
   // Describe the density expectation based on session size
   let densityHint: string;
   if (conversationText.length < 2000) {
-    densityHint = "This was a short session. Keep the summary very brief — a few bullets per section at most. Omit sections that have nothing meaningful to report.";
+    densityHint = "This was a short session. Keep the note brief, but still capture reusable context and any decisions future agents should know.";
   } else if (conversationText.length < 10000) {
-    densityHint = "This was a moderate session. Provide a balanced summary with key details.";
+    densityHint = "This was a moderate session. Write a useful knowledge-base entry with narrative context, concrete changes, and reusable lessons.";
   } else {
-    densityHint = "This was a long session. Provide a thorough summary but stay within the character limit. Prioritize the most important actions and outcomes.";
+    densityHint = "This was a long session. Write a dense but readable knowledge-base entry. Prioritize context, decisions, implementation details, gotchas, and future-agent guidance.";
   }
 
   return [
-    "Summarize the following coding assistant session into a concise structured daily log entry.",
-    `The summary must be at most ${maxLength} characters.`,
+    "Transform the following coding assistant session into an Obsidian daily-note entry that grows into a useful knowledge base.",
+    `The note must be at most ${maxLength} characters.`,
     densityHint,
+    "",
+    "Audience:",
+    "- A human returning days or months later who wants to understand what happened and why.",
+    "- Future coding agents that need operational context, decisions, file paths, commands, failures, fixes, and next steps.",
+    "",
+    "Style:",
+    "- Write as a concise engineering/research log, not a dry transcript or checklist.",
+    "- Prefer short explanatory paragraphs plus targeted bullets where useful.",
+    "- Preserve the reasoning behind decisions, not just the final actions.",
+    "- Include exact file paths, command names, config keys, error messages, and successful verification steps when relevant.",
+    "- If a problem was debugged, describe the symptom → cause → fix → verification chain.",
+    "- Use Obsidian-friendly markdown. Add wikilinks only when they are clearly useful and inferable from the session; do not invent note names.",
     "",
     "Use this exact structure:",
     "",
-    "#### Overview",
-    "One or two sentences: what was this session about at the highest level.",
+    "#### Context",
+    "A short narrative explaining the goal, project area, and why this session mattered.",
     "",
-    "#### Topics Discussed",
-    "- Bullet list of the main topics / questions the user raised",
+    "#### What Changed",
+    "Describe the concrete changes made. Use bullets for files/configs/commands, but include enough explanation for future maintenance.",
     "",
-    "#### Actions Taken",
-    "- Bullet list of concrete things that were done (files created/edited, commands run, configurations changed, etc.)",
+    "#### Decisions & Rationale",
+    "Capture important choices, tradeoffs, and why the chosen approach was used. If none, write \"None beyond implementation details.\"",
     "",
-    "#### Key Outcomes",
-    "- Bullet list of important results, decisions, or conclusions reached",
+    "#### Debugging Notes / Gotchas",
+    "Document errors encountered, root causes, fixes, and verification. If none, write \"None.\"",
     "",
-    "#### Open Items",
-    "- Bullet list of anything left unfinished, unresolved, or explicitly deferred. If nothing, write \"None.\"",
+    "#### Reusable Knowledge for Future Agents",
+    "Explain what a future agent should remember: where things live, how to test them, assumptions, conventions, and safe next actions.",
+    "",
+    "#### Open Threads",
+    "Anything unfinished, deferred, or worth checking next. If nothing, write \"None.\"",
     "",
     "Rules:",
-    "- Be concise but specific — include file names, function names, config keys when relevant",
-    "- Do NOT include generic filler — every bullet should carry information",
-    "- Do NOT wrap the output in code fences or add any preamble",
-    "- Output ONLY the markdown sections above, nothing else",
+    "- Do NOT include generic filler; every sentence should help future understanding or action.",
+    "- Do NOT wrap the output in code fences or add any preamble.",
+    "- Output ONLY the markdown sections above, nothing else.",
     "",
     "<session>",
     conversationText,
