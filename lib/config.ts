@@ -38,13 +38,18 @@ export interface ConventionsConfig {
   footer: string | null;
 }
 
+export type DailySummaryDetailLevel = "concise" | "normal" | "detailed";
+
 export interface DailySummaryConfig {
   enabled: boolean;
   folder: string;
   filenameFormat: string;
-  maxLength: number;
+  /** Detail preference for adaptive summaries. Output size is still planned from conversation size and model context. */
+  detailLevel: DailySummaryDetailLevel;
   /** Model for LLM-powered summarization, e.g. "anthropic/claude-sonnet-4-20250514" or "openai/gpt-4o". Empty string = use current session model. */
   summaryModel: string;
+  /** Deprecated legacy option. Ignored; summaries are no longer hard-truncated to a character limit. */
+  maxLength?: number;
 }
 
 export interface VaultConfig {
@@ -91,7 +96,7 @@ const DEFAULT_CONFIG: VaultConfig = {
     enabled: true,
     folder: "Daily",
     filenameFormat: "YYYY-MM-DD",
-    maxLength: 3000,
+    detailLevel: "normal",
     summaryModel: "",
   },
 };
@@ -191,6 +196,10 @@ export function detectConfig(vaultRoot: string): VaultConfig {
       config.folders.projects = topDirs.find((d) => d.toLowerCase() === name) || null;
       break;
     }
+  }
+
+  if (config.folders.daily) {
+    config.dailySummary.folder = config.folders.daily;
   }
 
   // Detect metadata style by sampling notes

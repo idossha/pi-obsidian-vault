@@ -7,7 +7,9 @@ description: Use when reading, writing, searching, or navigating notes in the us
 
 You have access to the user's Obsidian vault through `vault_*` tools. These operate directly on the filesystem — Obsidian does not need to be running.
 
-## Available Tools
+## Agent-Facing Tools
+
+These tools are for the Pi harness/agent to use under the hood; they are not human slash commands.
 
 - **vault_read** — Read a note by path or wikilink name
 - **vault_write** — Create, overwrite, or append to a note (supports templates)
@@ -16,6 +18,12 @@ You have access to the user's Obsidian vault through `vault_*` tools. These oper
 - **vault_tags** — List all tags or find notes by tag
 - **vault_backlinks** — Find all notes linking to a given note
 - **vault_metadata** — Read, set, or delete metadata fields (YAML or plaintext)
+
+## Useful Slash Commands
+
+- **/vault** — Show actionable vault status and relevant next commands
+- **/vault:daily flush** — Summarize the current session immediately
+- **/vault:init** — Generate `vault.config.json` from detected conventions
 
 ## Configuration
 

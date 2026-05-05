@@ -1,4 +1,4 @@
-import { Type, StringEnum, completeSimple, getModel, getProviders, type KnownProvider } from "@mariozechner/pi-ai";
+import { Type, StringEnum, completeSimple, getModel, getProviders, type KnownProvider, type Model } from "@mariozechner/pi-ai";
 import {
   type ExtensionAPI,
   type ExtensionContext,
@@ -14,7 +14,20 @@ import {
 } from "../lib/metadata.js";
 import { extractWikilinks, extractInlineTags } from "../lib/wikilinks.js";
 import { searchVault } from "../lib/search.js";
-import { SessionTracker, appendSessionSummary, getDailyFilePath, buildSummaryPrompt, computeSummaryLength } from "../lib/daily.js";
+import {
+  SessionTracker,
+  appendSessionSummary,
+  getDailyFilePath,
+  buildSummaryPlan,
+  buildFinalSummaryPrompt,
+  buildChunkSummaryPrompt,
+  buildReduceSummaryPrompt,
+  chunkSummaryUnits,
+  estimateTokens,
+  formatSummaryUnits,
+  type SummaryPlan,
+  type SummaryUnit,
+} from "../lib/daily.js";
 
 const FLUSH_ENTRY_TYPE = "vault-daily-flush";
 
@@ -35,7 +48,7 @@ export default function (pi: ExtensionAPI) {
       const noteCount = vault.getAllMarkdownFiles().length;
       ctx.ui.notify(
         `📓 Obsidian vault loaded: ${noteCount} notes\n` +
-        `   /vault  /vault:help  /vault:daily  /vault:init`,
+        `   /vault  /vault:daily flush  /vault:init`,
         "info"
       );
     }
@@ -67,10 +80,24 @@ export default function (pi: ExtensionAPI) {
       }
     });
 
-    // Track every tool call (all tools, not just vault_*)
+    // Track every tool call and result (all tools, not just vault_*). Inputs/results
+    // are kept as summary units and adaptively chunked later rather than sliced.
     pi.on("tool_call", async (event) => {
       try {
         tracker.trackToolCall(event.toolName, event.input as Record<string, any>);
+      } catch {
+        // Don't let tracking errors break tool execution
+      }
+    });
+
+    pi.on("tool_result", async (event) => {
+      try {
+        tracker.trackToolResult(
+          event.toolName,
+          event.input as Record<string, any>,
+          event.content,
+          event.isError
+        );
       } catch {
         // Don't let tracking errors break tool execution
       }
@@ -117,9 +144,17 @@ export default function (pi: ExtensionAPI) {
             } else if (msg.role === "assistant") {
               const text = extractMessageText(msg.content);
               if (text) tracker.trackAssistantResponse(text);
+              for (const toolCall of extractToolCalls(msg.content)) {
+                tracker.trackToolCall(toolCall.name, toolCall.arguments);
+              }
             } else if (msg.role === "toolResult" || msg.role === "tool") {
               if (msg.toolName) {
-                tracker.trackToolCall(msg.toolName, msg.details ?? {});
+                tracker.trackToolResult(
+                  msg.toolName,
+                  msg.input ?? msg.details ?? {},
+                  msg.content,
+                  Boolean(msg.isError)
+                );
               }
             }
           }
@@ -528,94 +563,103 @@ export default function (pi: ExtensionAPI) {
 
   // ── /vault:help command ─────────────────────────────────────────────
   pi.registerCommand("vault:help", {
-    description: "Show all vault commands and usage",
+    description: "Show focused Obsidian vault command help",
     async handler(_args, ctx) {
       const help = [
         "📓 Obsidian Vault Commands",
         "",
-        "/vault          — Show vault info (path, note count, metadata style, templates)",
-        "/vault:help     — Show this help message",
-        "/vault:daily    — View today's daily session log",
-        "/vault:daily flush — Summarize current session and write to daily file now",
-        "/vault:init     — Auto-detect vault conventions and generate vault.config.json",
-        "",
-        "Tools available to the LLM:",
-        "  vault_read      — Read a note by path or [[wikilink]]",
-        "  vault_write     — Create, overwrite, or append to a note",
-        "  vault_search    — Full-text search (supports regex)",
-        "  vault_list      — List files and directories",
-        "  vault_tags      — List all tags or find notes by tag",
-        "  vault_backlinks — Find notes linking to a given note",
-        "  vault_metadata  — Read, set, or delete note metadata",
+        "/vault                 — Status overview: vault path, note count, conventions, daily logging",
+        "/vault:daily flush     — Summarize current session now and append to today's daily note",
+        "/vault:init            — Generate vault.config.json from detected vault conventions",
       ].join("\n");
 
-      if (ctx.hasUI) {
-        ctx.ui.notify(help, "info");
-      }
+      emitCommandOutput(ctx, help, "info");
     },
   });
 
   // ── /vault command ──────────────────────────────────────────────────
   pi.registerCommand("vault", {
-    description: "Show vault info (path, notes, config) — try /vault:help for all commands",
+    description: "Show actionable vault status and relevant next commands",
     async handler(_args, ctx) {
       const files = vault.getAllMarkdownFiles();
       const entries = vault.listDir();
       const dirs = entries.filter((e) => e.type === "directory");
+      const dailyPath = getDailyFilePath(config);
+      const stats = tracker.getActivityStats();
 
       const info = [
-        `Vault: ${vault.root}`,
+        "📓 Obsidian Vault",
+        `Path: ${vault.root}`,
         `Notes: ${files.length}`,
-        `Top-level folders: ${dirs.map((d) => d.name).join(", ")}`,
+        `Top-level folders: ${dirs.map((d) => d.name).join(", ") || "(none)"}`,
         `Metadata style: ${config.metadata.style}`,
         `Notes folder: ${config.folders.notes || "(root)"}`,
         `Templates: ${Object.keys(config.templates.noteTemplates).join(", ") || "(none)"}`,
         `Footer: ${config.conventions.footer || "(none)"}`,
+        "",
+        `Daily summaries: ${config.dailySummary.enabled ? "enabled" : "disabled"}`,
+        `Daily file: ${dailyPath}`,
+        `Pending session context: ${stats.conversationTurns} turns, ${stats.toolCalls} tool calls, ~${stats.estimatedTokens} tokens`,
+        `Summary mode: adaptive/${config.dailySummary.detailLevel}; hierarchical when session context exceeds the summary model window`,
+        "",
+        "Next useful commands:",
+        "  /vault:daily flush",
+        "  /vault:init",
       ].join("\n");
 
-      if (ctx.hasUI) {
-        ctx.ui.notify(info, "info");
-      }
+      emitCommandOutput(ctx, info, "info");
     },
   });
 
   // ── /vault:daily command ────────────────────────────────────────────
   pi.registerCommand("vault:daily", {
-    description: "View today's daily log, or '/vault:daily flush' to write current session now",
+    description: "Append an adaptive summary of the current session to today's daily note",
+    getArgumentCompletions(argumentPrefix) {
+      const options = [
+        { value: "flush", label: "flush — summarize this session now" },
+        { value: "help", label: "help — show daily command help" },
+      ];
+      const prefix = argumentPrefix.trim().toLowerCase();
+      const matches = options.filter((option) => option.value.startsWith(prefix));
+      return matches.length > 0 ? matches : null;
+    },
     async handler(args, ctx) {
       const dailyPath = getDailyFilePath(config);
+      const subcommand = args.trim() || "help";
 
-      if (args?.trim() === "flush") {
-        // Write current session summary immediately
+      if (subcommand === "help") {
+        emitCommandOutput(ctx, [
+          "📓 /vault:daily",
+          "",
+          "flush — Summarize current session now; writes only complete, non-truncated summaries",
+        ].join("\n"), "info");
+        return;
+      }
+
+      if (subcommand === "flush") {
+        if (!config.dailySummary.enabled) {
+          emitCommandOutput(ctx, "Daily summaries are disabled in vault.config.json (dailySummary.enabled=false).", "info");
+          return;
+        }
         if (!tracker.hasActivity()) {
-          if (ctx.hasUI) ctx.ui.notify("No vault activity in this session yet.", "info");
+          emitCommandOutput(ctx, "No session activity has been tracked since the last flush.", "info");
           return;
         }
         try {
-          if (ctx.hasUI) ctx.ui.notify("Generating LLM summary...", "info");
+          emitCommandOutput(ctx, "Generating adaptive LLM summary...", "info");
           await summarizeAndAppend(vault, config, tracker, ctx);
           // Persist a flush checkpoint in the session so reconstruction
-          // and shutdown know to only summarize content after this point
+          // and shutdown know to only summarize content after this point.
           pi.appendEntry(FLUSH_ENTRY_TYPE, { timestamp: Date.now() });
           tracker = new SessionTracker();
-          if (ctx.hasUI) ctx.ui.notify(`Session summary appended to ${dailyPath}`, "info");
+          emitCommandOutput(ctx, `Session summary appended to ${dailyPath}`, "info");
         } catch (e: any) {
-          if (ctx.hasUI) ctx.ui.notify(`Error: ${e.message}`, "error");
+          emitCommandOutput(ctx, `Error: ${e.message}`, "error");
         }
         return;
       }
 
-      // Show today's daily file
-      if (vault.exists(dailyPath)) {
-        const content = vault.read(dailyPath);
-        if (ctx.hasUI) {
-          ctx.ui.notify(`${dailyPath}:\n\n${content.slice(0, 1000)}`, "info");
-        }
-      } else {
-        if (ctx.hasUI) {
-          ctx.ui.notify(`No daily file yet for today (${dailyPath}). Vault activity will be logged on session end.`, "info");
-        }
-      }
+      emitCommandOutput(ctx, `Unknown /vault:daily subcommand "${subcommand}". Try /vault:daily help.`, "error");
     },
   });
 
@@ -640,9 +684,7 @@ export default function (pi: ExtensionAPI) {
       const fs = await import("node:fs");
       fs.writeFileSync(configPath, configContent, "utf-8");
 
-      if (ctx.hasUI) {
-        ctx.ui.notify(`Generated vault.config.json at ${configPath}`, "info");
-      }
+      emitCommandOutput(ctx, `Generated vault.config.json at ${configPath}`, "info");
     },
   });
 }
@@ -734,8 +776,57 @@ function extractMessageText(content: unknown): string {
     .join("\n");
 }
 
+/** Extract assistant tool-call blocks when reconstructing tracker state after /reload. */
+function extractToolCalls(content: unknown): Array<{ name: string; arguments: Record<string, any> }> {
+  if (!Array.isArray(content)) return [];
+  return content
+    .filter((block: any) => block?.type === "toolCall" && typeof block.name === "string")
+    .map((block: any) => ({
+      name: block.name,
+      arguments: (block.arguments && typeof block.arguments === "object" ? block.arguments : {}) as Record<string, any>,
+    }));
+}
+
+function emitCommandOutput(
+  ctx: ExtensionContext,
+  message: string,
+  level: "info" | "error" | "warning" = "info"
+): void {
+  if (ctx.hasUI) {
+    ctx.ui.notify(message, level);
+  } else {
+    const prefix = level === "error" ? "[obsidian-vault:error]" : "[obsidian-vault]";
+    console.log(`${prefix} ${message}`);
+  }
+}
+
+function resolveSummaryModel(ctx: ExtensionContext, config: VaultConfig): Model<any> | undefined {
+  let model = ctx.model;
+  const configured = config.dailySummary.summaryModel.trim();
+  if (!configured) return model;
+
+  const slashIdx = configured.indexOf("/");
+  if (slashIdx <= 0 || slashIdx >= configured.length - 1) return undefined;
+
+  const provider = configured.slice(0, slashIdx);
+  const id = configured.slice(slashIdx + 1);
+
+  const registryModel = ctx.modelRegistry.find(provider, id) as Model<any> | undefined;
+  if (registryModel) return registryModel;
+
+  if (getProviders().includes(provider as KnownProvider)) {
+    const builtIn = (getModel as any)(provider, id) as Model<any> | undefined;
+    if (builtIn) return builtIn;
+  }
+
+  return undefined;
+}
+
 /**
  * Call the LLM to summarize the session, then append to the daily file.
+ * The summarization plan is based on source context size and model context,
+ * not on a fixed line/character cap. Oversized input is summarized
+ * hierarchically; incomplete LLM output is never appended.
  */
 async function summarizeAndAppend(
   vault: Vault,
@@ -743,66 +834,36 @@ async function summarizeAndAppend(
   tracker: SessionTracker,
   ctx: ExtensionContext
 ): Promise<void> {
-  const conversationText = tracker.toConversationText();
-  const dynamicMaxLength = computeSummaryLength(conversationText.length, config.dailySummary.maxLength);
-  const prompt = buildSummaryPrompt(conversationText, dynamicMaxLength);
-
-  // Resolve model: use configured summaryModel, or fall back to current session model
-  let model = ctx.model;
-  if (config.dailySummary.summaryModel) {
-    const [provider, id] = config.dailySummary.summaryModel.split("/", 2);
-    if (provider && id && getProviders().includes(provider as KnownProvider)) {
-      const found = (getModel as any)(provider, id);
-      if (found) model = found;
-    }
-  }
-
+  const model = resolveSummaryModel(ctx, config);
   if (!model) {
     throw new Error("No model available for summarization");
   }
 
   const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
-  if (!auth.ok || !auth.apiKey) {
-    throw new Error(`No API key for ${model.provider}/${model.id}`);
+  if (!auth.ok) {
+    throw new Error(auth.error || `No auth configured for ${model.provider}/${model.id}`);
   }
 
-  const response = await completeSimple(
+  const units = tracker.toSummaryUnits();
+  const plan = buildSummaryPlan(units, {
+    contextWindow: model.contextWindow,
+    maxTokens: model.maxTokens,
+  }, config.dailySummary.detailLevel);
+
+  if (ctx.hasUI && plan.strategy === "hierarchical") {
+    ctx.ui.notify(
+      `Session context is ~${plan.sourceTokens} tokens; summarizing in ${plan.chunkCount} chunks so nothing is dropped.`,
+      "info"
+    );
+  }
+
+  const summary = await summarizeUnitsWithPlan(
+    units,
+    plan,
     model,
-    {
-      systemPrompt:
-        "You write Obsidian daily-note entries that function as an expanding knowledge base " +
-        "for human users and future coding agents. Return only the requested markdown sections, " +
-        "with no preamble or code fences.",
-      messages: [
-        {
-          role: "user" as const,
-          content: [{ type: "text" as const, text: prompt }],
-          timestamp: Date.now(),
-        },
-      ],
-    },
-    {
-      apiKey: auth.apiKey,
-      headers: auth.headers,
-      reasoning: "minimal",
-      maxTokens: Math.max(1000, Math.ceil(dynamicMaxLength / 3)),
-    }
+    { apiKey: auth.apiKey, headers: auth.headers },
+    ctx.signal
   );
-
-  if (response.stopReason === "error") {
-    throw new Error(response.errorMessage || "LLM summary request failed");
-  }
-
-  const summary = response.content
-    .filter((c: any): c is { type: "text"; text: string } => c.type === "text")
-    .map((c: any) => c.text)
-    .join("\n")
-    .trim();
-
-  if (!summary) {
-    const contentTypes = response.content.map((c: any) => c?.type || "unknown").join(", ") || "none";
-    throw new Error(`LLM returned empty summary (stopReason=${response.stopReason}, contentTypes=${contentTypes})`);
-  }
 
   // Build heading and metadata block
   const startTime = tracker.getStartTime();
@@ -814,8 +875,161 @@ async function summarizeAndAppend(
   const metaLines = [
     `> **Model:** ${modelLabel}`,
     `> **Project:** \`${ctx.cwd}\``,
+    `> **Summary:** adaptive/${plan.detailLevel}, ${plan.strategy}, ${plan.chunkCount} chunk${plan.chunkCount === 1 ? "" : "s"}, ~${plan.sourceTokens} source tokens`,
   ];
   const fullSummary = metaLines.join("\n") + "\n\n" + summary;
 
   appendSessionSummary(vault, config, heading, fullSummary);
+}
+
+async function summarizeUnitsWithPlan(
+  units: SummaryUnit[],
+  plan: SummaryPlan,
+  model: Model<any>,
+  auth: { apiKey?: string; headers?: Record<string, string> },
+  signal?: AbortSignal
+): Promise<string> {
+  if (plan.finalInputBudgetTokens < 200 || plan.chunkInputBudgetTokens < 200) {
+    throw new Error(
+      `Summary model context window is too small for adaptive summarization ` +
+      `(contextWindow=${plan.contextWindow}, finalInputBudget=${plan.finalInputBudgetTokens}, chunkInputBudget=${plan.chunkInputBudgetTokens}).`
+    );
+  }
+
+  const chunks = chunkSummaryUnits(
+    units,
+    plan.strategy === "single-pass" ? plan.finalInputBudgetTokens : plan.chunkInputBudgetTokens
+  );
+
+  if (chunks.length === 1) {
+    return completeSummaryMarkdown(
+      model,
+      auth,
+      buildFinalSummaryPrompt(chunks[0].text, plan, "session-transcript"),
+      plan.finalOutputTokens,
+      signal
+    );
+  }
+
+  let intermediate: SummaryUnit[] = [];
+  for (const chunk of chunks) {
+    const partial = await completeSummaryMarkdown(
+      model,
+      auth,
+      buildChunkSummaryPrompt(chunk, plan),
+      plan.chunkOutputTokens,
+      signal
+    );
+    intermediate.push({
+      id: `chunk-summary-${chunk.index}-of-${chunk.total}`,
+      text: [`# Chunk ${chunk.index} of ${chunk.total} summary`, partial].join("\n\n"),
+    });
+  }
+
+  let round = 1;
+  while (estimateTokens(formatSummaryUnits(intermediate)) > plan.finalInputBudgetTokens) {
+    if (round > 6) {
+      throw new Error("Could not reduce intermediate summaries into the model context without truncation; daily summary was not written.");
+    }
+
+    const reductionChunks = chunkSummaryUnits(intermediate, plan.finalInputBudgetTokens);
+    if (reductionChunks.length <= 1) break;
+
+    const next: SummaryUnit[] = [];
+    for (const chunk of reductionChunks) {
+      const reduced = await completeSummaryMarkdown(
+        model,
+        auth,
+        buildReduceSummaryPrompt(chunk, plan, round),
+        plan.chunkOutputTokens,
+        signal
+      );
+      next.push({
+        id: `reduced-summary-round-${round}-${chunk.index}-of-${chunk.total}`,
+        text: [`# Reduced summary round ${round}, chunk ${chunk.index} of ${chunk.total}`, reduced].join("\n\n"),
+      });
+    }
+    intermediate = next;
+    round++;
+  }
+
+  const finalSource = formatSummaryUnits(intermediate);
+  if (estimateTokens(finalSource) > plan.finalInputBudgetTokens) {
+    throw new Error("Final intermediate summary still exceeds the model context; daily summary was not written rather than truncating it.");
+  }
+
+  return completeSummaryMarkdown(
+    model,
+    auth,
+    buildFinalSummaryPrompt(finalSource, plan, "intermediate-summaries"),
+    plan.finalOutputTokens,
+    signal
+  );
+}
+
+async function completeSummaryMarkdown(
+  model: Model<any>,
+  auth: { apiKey?: string; headers?: Record<string, string> },
+  prompt: string,
+  requestedMaxTokens: number,
+  signal?: AbortSignal
+): Promise<string> {
+  const hardMaxTokens = Math.max(256, model.maxTokens || requestedMaxTokens);
+  let maxTokens = Math.max(256, Math.min(requestedMaxTokens, hardMaxTokens));
+
+  for (let attempt = 1; attempt <= 8; attempt++) {
+    const response = await completeSimple(
+      model,
+      {
+        systemPrompt:
+          "You write Obsidian daily-note entries and intermediate summaries for an expanding knowledge base. " +
+          "Return only the requested markdown, with no preamble or code fences. Always finish cleanly; never stop mid-sentence.",
+        messages: [
+          {
+            role: "user" as const,
+            content: [{ type: "text" as const, text: prompt }],
+            timestamp: Date.now(),
+          },
+        ],
+      },
+      {
+        apiKey: auth.apiKey,
+        headers: auth.headers,
+        reasoning: "minimal",
+        maxTokens,
+        signal,
+      }
+    );
+
+    if (response.stopReason === "error" || response.stopReason === "aborted") {
+      throw new Error(response.errorMessage || `LLM summary request ${response.stopReason}`);
+    }
+
+    const text = response.content
+      .filter((c: any): c is { type: "text"; text: string } => c.type === "text")
+      .map((c: any) => c.text)
+      .join("\n")
+      .trim();
+
+    if (response.stopReason === "length") {
+      if (maxTokens < hardMaxTokens) {
+        maxTokens = Math.min(hardMaxTokens, Math.ceil(maxTokens * 1.5));
+        continue;
+      }
+      throw new Error("LLM hit its output limit; refusing to append a partial/truncated daily summary.");
+    }
+
+    if (response.stopReason !== "stop") {
+      throw new Error(`Unexpected LLM stop reason for summary: ${response.stopReason}`);
+    }
+
+    if (!text) {
+      const contentTypes = response.content.map((c: any) => c?.type || "unknown").join(", ") || "none";
+      throw new Error(`LLM returned empty summary (contentTypes=${contentTypes})`);
+    }
+
+    return text;
+  }
+
+  throw new Error("LLM summary did not complete after retries; daily summary was not written.");
 }

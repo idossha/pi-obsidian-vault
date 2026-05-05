@@ -4,7 +4,7 @@ A [Pi](https://github.com/badlogic/pi-mono) extension for filesystem-native Obsi
 
 ## Features
 
-- **7 vault tools** — read, write, search, list, tags, backlinks, metadata
+- **Agent-only vault tools** — Pi agents can read, write, search, list, inspect tags/backlinks, and edit metadata under the hood
 - **Wikilink resolution** — resolve `[[note names]]` to file paths like Obsidian does
 - **Both metadata styles** — supports YAML frontmatter and plaintext metadata headers
 - **Auto-detection** — reads `.obsidian/` settings to detect your vault's conventions (folders, metadata style, date formats, templates, footer)
@@ -43,43 +43,44 @@ Or add it to your Pi settings (`~/.pi/agent/settings.json` or `.pi/settings.json
 
 That's it. The extension auto-detects your vault's folder structure, metadata style, templates, and conventions from `.obsidian/` settings.
 
-## Tools
+## Agent Integration
 
-| Tool | Description |
-|------|-------------|
-| `vault_read` | Read a note by path or wikilink name |
-| `vault_write` | Create, overwrite, or append to a note (with template support) |
-| `vault_search` | Full-text search with optional regex and subfolder filtering |
-| `vault_list` | List files and directories in the vault |
-| `vault_tags` | List all tags or find notes by a specific tag |
-| `vault_backlinks` | Find all notes that link to a given note |
-| `vault_metadata` | Read, set, or delete metadata fields (YAML or plaintext) |
+The extension registers Obsidian vault tools for the Pi harness and agent to use internally. These are not exposed as human-facing slash commands; use natural language to ask Pi to read, write, search, or organize vault notes.
 
 ## Commands
 
 | Command | Description |
 |---------|-------------|
-| `/vault` | Show vault info (path, note count, detected config) |
-| `/vault:help` | Show all vault commands and tools with descriptions |
-| `/vault:daily` | View today's daily session log |
-| `/vault:daily flush` | Summarize current session via LLM and write to daily file now |
+| `/vault` | Show actionable vault status, conventions, daily-summary state, and next commands |
+| `/vault:help` | Show focused vault command help |
+| `/vault:daily flush` | Summarize current session via LLM and write to today's daily note now |
 | `/vault:init` | Auto-detect vault conventions and generate `vault.config.json` |
 
 ## Skill
 
-The extension includes an `obsidian-vault` skill that teaches Pi about Obsidian markdown conventions (wikilinks, embeds, callouts, metadata styles) and how to use the vault tools effectively.
+The extension includes an `obsidian-vault` skill that teaches Pi about Obsidian markdown conventions (wikilinks, embeds, callouts, metadata styles) and how to use the under-the-hood vault tools effectively.
 
 ## Daily Session Log
 
-Every time you end a Pi session, the extension sends the full conversation to the LLM for summarization, then appends the result to `Daily/YYYY-MM-DD.md` in your vault. The LLM produces a structured summary with these sections:
+Every time you end a Pi session, the extension summarizes tracked session context and appends the result to `Daily/YYYY-MM-DD.md` (or the detected/configured daily folder) in your vault.
 
-- **Overview** — one or two sentence high-level description
-- **Topics Discussed** — what the user asked about
-- **Actions Taken** — files created/edited, commands run, configurations changed
-- **Key Outcomes** — important results, decisions, or conclusions
-- **Open Items** — anything left unfinished or explicitly deferred
+Summarization is adaptive rather than capped by a fixed line or character limit:
 
-The raw conversation (user prompts, assistant responses, tool calls, files touched, shell commands) is collected throughout the session and passed to the LLM at shutdown for summarization.
+- The extension estimates the amount of conversation/tool context and the selected summary model's context window.
+- If the session fits, it summarizes in one pass.
+- If the session is larger than the model window, it splits the context into processed chunks and combines them hierarchically.
+- It does not raw-slice the final note. If the LLM stops because of output length, the extension retries with a larger output budget and refuses to append incomplete output if the model still cannot finish.
+
+The LLM produces a structured summary with these sections:
+
+- **Context** — goal, project area, and why the session mattered
+- **What Changed** — files/configs/commands and concrete changes
+- **Decisions & Rationale** — important choices and tradeoffs
+- **Debugging Notes / Gotchas** — symptoms, causes, fixes, and verification
+- **Reusable Knowledge for Future Agents** — conventions, assumptions, and safe next actions
+- **Open Threads** — unfinished or deferred items
+
+The raw conversation (user prompts, assistant responses, tool calls, files touched, shell commands) is collected throughout the session and planned against the summary model context at shutdown or `/vault:daily flush` time.
 
 Example daily file:
 
@@ -94,55 +95,59 @@ Links:
 
 > **Model:** anthropic/claude-sonnet-4-20250514
 > **Project:** `/Users/ido/projects/pi-obsidian-vault`
+> **Summary:** adaptive/normal, single-pass, 1 chunk, ~1800 source tokens
 
-#### Overview
-Refactored the search module in `lib/search.ts` to support regex queries and added test coverage.
+#### Context
+Refactored the search module in `lib/search.ts` so vault search could support regex queries while preserving the existing plain-text search workflow.
 
-#### Topics Discussed
-- Refactoring the search module for regex support
-- Testing the refactored search against the vault
-- Updating documentation to reflect changes
+#### What Changed
+- Edited `lib/search.ts` to add a `regex` option to `searchVault()` and refactor match handling.
+- Ran `npx tsc --noEmit` to verify compilation.
+- Updated `README.md` with the new search parameter.
 
-#### Actions Taken
-- Edited `lib/search.ts` — added `regex` option to `searchVault()` and refactored match logic
-- Ran `npx tsc --noEmit` to verify compilation
-- Updated `README.md` with new search parameters
+#### Decisions & Rationale
+Regex support is opt-in (`regex: true`) so existing case-insensitive substring searches keep their previous behavior.
 
-#### Key Outcomes
-- Search now supports optional regex mode via `regex: true` parameter
-- All existing tests pass, no regressions
+#### Debugging Notes / Gotchas
+None.
 
-#### Open Items
-- None.
+#### Reusable Knowledge for Future Agents
+Use the agent's vault search capability in regex mode only when the query is intended as a regular expression; otherwise prefer safer literal matching.
+
+#### Open Threads
+None.
 
 ### 16:45 → 17:03 — Session Log
 
 > **Model:** openai/gpt-4o
 > **Project:** `/Users/ido/research/neuro-analysis`
+> **Summary:** adaptive/normal, single-pass, 1 chunk, ~950 source tokens
 
-#### Overview
-Explored neuroimaging notes and created a new note on fMRI preprocessing.
+#### Context
+Explored existing neuroimaging notes to create a connected note on fMRI preprocessing.
 
-#### Topics Discussed
-- Finding notes related to neuroimaging
-- Creating a structured note on fMRI preprocessing pipelines
+#### What Changed
+- Searched the vault for "neuroimaging".
+- Read `Zettelkasten/Brain Atlases.md` for context.
+- Created `Zettelkasten/fMRI Preprocessing.md` with a pipeline overview.
 
-#### Actions Taken
-- Searched vault for "neuroimaging"
-- Read `Zettelkasten/Brain Atlases.md` for context
-- Created `Zettelkasten/fMRI Preprocessing.md` with pipeline overview
+#### Decisions & Rationale
+The new note links to existing atlas context so future work can connect preprocessing decisions to anatomical reference material.
 
-#### Key Outcomes
-- New fMRI preprocessing note created with links to existing atlas notes
+#### Debugging Notes / Gotchas
+None.
 
-#### Open Items
-- Add section on motion correction parameters
+#### Reusable Knowledge for Future Agents
+Before adding neuroimaging notes, search for existing atlas/preprocessing material and prefer wikilinks to established notes over duplicate standalone summaries.
+
+#### Open Threads
+Add a section on motion-correction parameters.
 
 ---
 # References
 ```
 
-By default the extension uses the current session model for summarization. You can configure a dedicated (cheaper/faster) model via `dailySummary.summaryModel`.
+By default the extension uses the current session model for summarization. You can configure a dedicated (cheaper/faster) model via `dailySummary.summaryModel`, and a preferred density via `dailySummary.detailLevel` (`concise`, `normal`, or `detailed`).
 
 Disable daily logging by setting `dailySummary.enabled` to `false` in `vault.config.json`.
 
@@ -190,7 +195,7 @@ Run `/vault:init` to generate a `vault.config.json` in your vault root. The exte
     "enabled": true,
     "folder": "Daily",
     "filenameFormat": "YYYY-MM-DD",
-    "maxLength": 3000,
+    "detailLevel": "normal",
     "summaryModel": ""
   }
 }
@@ -228,7 +233,7 @@ The extension handles both transparently.
 | `dailySummary.enabled` | `true` | Enable/disable session logging |
 | `dailySummary.folder` | `"Daily"` | Vault subfolder for daily files |
 | `dailySummary.filenameFormat` | `"YYYY-MM-DD"` | Date format for the daily filename |
-| `dailySummary.maxLength` | `3000` | Maximum character length for the summary body |
+| `dailySummary.detailLevel` | `"normal"` | Preferred summary density: `"concise"`, `"normal"`, or `"detailed"`. Actual processing is still based on source context size and model window. |
 | `dailySummary.summaryModel` | `""` | Model for summarization in `"provider/model-id"` format (e.g. `"anthropic/claude-sonnet-4-20250514"`, `"openai/gpt-4o"`). Empty string uses the current session model. |
 
 ## Requirements
