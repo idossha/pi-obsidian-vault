@@ -48,7 +48,7 @@ export default function (pi: ExtensionAPI) {
       const noteCount = vault.getAllMarkdownFiles().length;
       ctx.ui.notify(
         `📓 Obsidian vault loaded: ${noteCount} notes\n` +
-        `   /vault  /vault:daily flush  /vault:init`,
+        `   /vault  /value:flush  /vault:init`,
         "info"
       );
     }
@@ -569,7 +569,7 @@ export default function (pi: ExtensionAPI) {
         "📓 Obsidian Vault Commands",
         "",
         "/vault                 — Status overview: vault path, note count, conventions, daily logging",
-        "/vault:daily flush     — Summarize current session now and append to today's daily note",
+        "/value:flush           — Summarize current session now and append to today's daily note",
         "/vault:init            — Generate vault.config.json from detected vault conventions",
       ].join("\n");
 
@@ -603,7 +603,7 @@ export default function (pi: ExtensionAPI) {
         `Summary mode: adaptive/${config.dailySummary.detailLevel}; hierarchical when session context exceeds the summary model window`,
         "",
         "Next useful commands:",
-        "  /vault:daily flush",
+        "  /value:flush",
         "  /vault:init",
       ].join("\n");
 
@@ -611,55 +611,31 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
-  // ── /vault:daily command ────────────────────────────────────────────
-  pi.registerCommand("vault:daily", {
+  // ── /value:flush command ────────────────────────────────────────────
+  pi.registerCommand("value:flush", {
     description: "Append an adaptive summary of the current session to today's daily note",
-    getArgumentCompletions(argumentPrefix) {
-      const options = [
-        { value: "flush", label: "flush — summarize this session now" },
-        { value: "help", label: "help — show daily command help" },
-      ];
-      const prefix = argumentPrefix.trim().toLowerCase();
-      const matches = options.filter((option) => option.value.startsWith(prefix));
-      return matches.length > 0 ? matches : null;
-    },
-    async handler(args, ctx) {
+    async handler(_args, ctx) {
       const dailyPath = getDailyFilePath(config);
-      const subcommand = args.trim() || "help";
 
-      if (subcommand === "help") {
-        emitCommandOutput(ctx, [
-          "📓 /vault:daily",
-          "",
-          "flush — Summarize current session now; writes only complete, non-truncated summaries",
-        ].join("\n"), "info");
+      if (!config.dailySummary.enabled) {
+        emitCommandOutput(ctx, "Daily summaries are disabled in vault.config.json (dailySummary.enabled=false).", "info");
         return;
       }
-
-      if (subcommand === "flush") {
-        if (!config.dailySummary.enabled) {
-          emitCommandOutput(ctx, "Daily summaries are disabled in vault.config.json (dailySummary.enabled=false).", "info");
-          return;
-        }
-        if (!tracker.hasActivity()) {
-          emitCommandOutput(ctx, "No session activity has been tracked since the last flush.", "info");
-          return;
-        }
-        try {
-          emitCommandOutput(ctx, "Generating adaptive LLM summary...", "info");
-          await summarizeAndAppend(vault, config, tracker, ctx);
-          // Persist a flush checkpoint in the session so reconstruction
-          // and shutdown know to only summarize content after this point.
-          pi.appendEntry(FLUSH_ENTRY_TYPE, { timestamp: Date.now() });
-          tracker = new SessionTracker();
-          emitCommandOutput(ctx, `Session summary appended to ${dailyPath}`, "info");
-        } catch (e: any) {
-          emitCommandOutput(ctx, `Error: ${e.message}`, "error");
-        }
+      if (!tracker.hasActivity()) {
+        emitCommandOutput(ctx, "No session activity has been tracked since the last flush.", "info");
         return;
       }
-
-      emitCommandOutput(ctx, `Unknown /vault:daily subcommand "${subcommand}". Try /vault:daily help.`, "error");
+      try {
+        emitCommandOutput(ctx, "Generating adaptive LLM summary...", "info");
+        await summarizeAndAppend(vault, config, tracker, ctx);
+        // Persist a flush checkpoint in the session so reconstruction
+        // and shutdown know to only summarize content after this point.
+        pi.appendEntry(FLUSH_ENTRY_TYPE, { timestamp: Date.now() });
+        tracker = new SessionTracker();
+        emitCommandOutput(ctx, `Session summary appended to ${dailyPath}`, "info");
+      } catch (e: any) {
+        emitCommandOutput(ctx, `Error: ${e.message}`, "error");
+      }
     },
   });
 

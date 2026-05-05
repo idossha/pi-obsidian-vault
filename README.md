@@ -53,7 +53,7 @@ The extension registers Obsidian vault tools for the Pi harness and agent to use
 |---------|-------------|
 | `/vault` | Show actionable vault status, conventions, daily-summary state, and next commands |
 | `/vault:help` | Show focused vault command help |
-| `/vault:daily flush` | Summarize current session via LLM and write to today's daily note now |
+| `/value:flush` | Summarize current session via LLM and write to today's daily note now |
 | `/vault:init` | Auto-detect vault conventions and generate `vault.config.json` |
 
 ## Skill
@@ -80,7 +80,7 @@ The LLM produces a structured summary with these sections:
 - **Reusable Knowledge for Future Agents** — conventions, assumptions, and safe next actions
 - **Open Threads** — unfinished or deferred items
 
-The raw conversation (user prompts, assistant responses, tool calls, files touched, shell commands) is collected throughout the session and planned against the summary model context at shutdown or `/vault:daily flush` time.
+The raw conversation (user prompts, assistant responses, tool calls, files touched, shell commands) is collected throughout the session and planned against the summary model context at shutdown or `/value:flush` time.
 
 Example daily file:
 

@@ -22,7 +22,7 @@ These tools are for the Pi harness/agent to use under the hood; they are not hum
 ## Useful Slash Commands
 
 - **/vault** — Show actionable vault status and relevant next commands
-- **/vault:daily flush** — Summarize the current session immediately
+- **/value:flush** — Summarize the current session immediately
 - **/vault:init** — Generate `vault.config.json` from detected conventions
 
 ## Configuration
