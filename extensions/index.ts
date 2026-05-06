@@ -48,7 +48,7 @@ export default function (pi: ExtensionAPI) {
       const noteCount = vault.getAllMarkdownFiles().length;
       ctx.ui.notify(
         `📓 Obsidian vault loaded: ${noteCount} notes\n` +
-        `   /vault  /value:flush  /vault:init`,
+        `   /vault  /vault:flush  /vault:init`,
         "info"
       );
     }
@@ -569,7 +569,7 @@ export default function (pi: ExtensionAPI) {
         "📓 Obsidian Vault Commands",
         "",
         "/vault                 — Status overview: vault path, note count, conventions, daily logging",
-        "/value:flush           — Summarize current session now and append to today's daily note",
+        "/vault:flush           — Summarize current session now and append to today's daily note",
         "/vault:init            — Generate vault.config.json from detected vault conventions",
       ].join("\n");
 
@@ -603,7 +603,7 @@ export default function (pi: ExtensionAPI) {
         `Summary mode: adaptive/${config.dailySummary.detailLevel}; hierarchical when session context exceeds the summary model window`,
         "",
         "Next useful commands:",
-        "  /value:flush",
+        "  /vault:flush",
         "  /vault:init",
       ].join("\n");
 
@@ -611,8 +611,8 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
-  // ── /value:flush command ────────────────────────────────────────────
-  pi.registerCommand("value:flush", {
+  // ── /vault:flush command ────────────────────────────────────────────
+  pi.registerCommand("vault:flush", {
     description: "Append an adaptive summary of the current session to today's daily note",
     async handler(_args, ctx) {
       const dailyPath = getDailyFilePath(config);
